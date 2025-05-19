@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Barrel Inventory Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #qr-reader {
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            border: 1px solid #e2e8f0; /* Tailwind gray-200 */
+            border-radius: 0.5rem; /* Tailwind rounded-lg */
+        }
+        .qr-reader-region-visible {
+            border-radius: 0.5rem;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.375rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .btn-primary {
+            background-color: #3b82f6; /* Tailwind blue-500 */
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #2563eb; /* Tailwind blue-600 */
+        }
+        .btn-secondary {
+            background-color: #6b7280; /* Tailwind gray-500 */
+            color: white;
+        }
+        .btn-secondary:hover {
+            background-color: #4b5563; /* Tailwind gray-600 */
+        }
+        .btn-disabled {
+            background-color: #d1d5db; /* Tailwind gray-300 */
+            cursor: not-allowed;
+        }
+        .status-success { color: #16a34a; /* Tailwind green-600 */ }
+        .status-error { color: #dc2626; /* Tailwind red-600 */ }
+        .input-field {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 0.375rem;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container bg-white shadow-lg rounded-lg p-6">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Barrel Inventory Scanner</h1>
+
+        <div id="url-setup" class="mb-6">
+            <label for="appsScriptUrl" class="block text-sm font-medium text-gray-700 mb-1">Google Apps Script Web App URL:</label>
+            <input type="text" id="appsScriptUrl" class="input-field" placeholder="Paste your Web App URL here">
+            <button id="saveUrlButton" class="btn btn-primary w-full mt-2">Save URL & Start Scanner</button>
+            <p id="url-status" class="text-xs text-gray-500 mt-1"></p>
+        </div>
+
+        <div id="scanner-section" class="hidden">
+            <div id="qr-reader" class="mb-4"></div>
+            <div id="qr-reader-results" class="text-center mb-4">
+                <p id="scan-instruction" class="text-lg font-semibold text-gray-700">Please wait...</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Scanned Barrel ID:</label>
+                    <p id="barrelIdDisplay" class="text-lg p-2 border border-gray-300 rounded-md bg-gray-50 h-10">-</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Scanned Location ID:</label>
+                    <p id="locationIdDisplay" class="text-lg p-2 border border-gray-300 rounded-md bg-gray-50 h-10">-</p>
+                </div>
+            </div>
+
+            <button id="submitUpdateButton" class="btn btn-primary w-full mb-2 btn-disabled" disabled>Update Location in Sheet</button>
+            <button id="resetScannerButton" class="btn btn-secondary w-full">Scan Again</button>
+            <p id="updateStatus" class="text-center mt-3 font-medium"></p>
+        </div>
+    </div>
+
+    <script>
+        // Constants for scan states
+        const SCAN_STATE_IDLE = 'idle';
+        const SCAN_STATE_BARREL = 'barrel';
+        const SCAN_STATE_LOCATION = 'location';
+        const SCAN_STATE_DONE = 'done';
+
+        // Global variables
+        let currentScanState = SCAN_STATE_IDLE;
+        let scannedBarrelId = null;
+        let scannedLocationId = null;
+        let html5QrCode = null;
+        let googleAppsScriptUrl = localStorage.getItem('googleAppsScriptUrl_barrelScanner'); // Attempt to load saved URL
+
+        // DOM Elements
+        const appsScriptUrlInput = document.getElementById('appsScriptUrl');
+        const saveUrlButton = document.getElementById('saveUrlButton');
+        const urlStatus = document.getElementById('url-status');
+        const urlSetupDiv = document.getElementById('url-setup');
+        const scannerSectionDiv = document.getElementById('scanner-section');
+        const scanInstructionEl = document.getElementById('scan-instruction');
+        const barrelIdDisplayEl = document.getElementById('barrelIdDisplay');
+        const locationIdDisplayEl = document.getElementById('locationIdDisplay');
+        const submitUpdateButton = document.getElementById('submitUpdateButton');
+        const resetScannerButton = document.getElementById('resetScannerButton');
+        const updateStatusEl = document.getElementById('updateStatus');
+        const qrReaderDiv = document.getElementById('qr-reader');
+
+        // Function to update the UI based on the current state
+        function updateUI() {
+            console.log("updateUI called. Current state:", currentScanState);
+            barrelIdDisplayEl.textContent = scannedBarrelId || '-';
+            locationIdDisplayEl.textContent = scannedLocationId || '-';
+
+            switch (currentScanState) {
+                case SCAN_STATE_IDLE:
+                    scanInstructionEl.textContent = 'Initializing... Click "Save URL & Start Scanner"';
+                    submitUpdateButton.disabled = true;
+                    submitUpdateButton.classList.add('btn-disabled');
+                    qrReaderDiv.classList.add('hidden'); // Hide QR reader view
+                    scannerSectionDiv.classList.add('hidden'); // Hide scanner section
+                    urlSetupDiv.classList.remove('hidden'); // Show URL setup
+                    break;
+                case SCAN_STATE_BARREL:
+                    scanInstructionEl.textContent = 'Aim camera at BARREL QR Code';
+                    submitUpdateButton.disabled = true;
+                    submitUpdateButton.classList.add('btn-disabled');
+                    qrReaderDiv.classList.remove('hidden'); // Show QR reader view
+                    scannerSectionDiv.classList.remove('hidden'); // Ensure scanner section is visible
+                    urlSetupDiv.classList.add('hidden'); // Hide URL setup
+                    break;
+                case SCAN_STATE_LOCATION:
+                    scanInstructionEl.textContent = 'Aim camera at LOCATION QR Code';
+                    submitUpdateButton.disabled = true;
+                    submitUpdateButton.classList.add('btn-disabled');
+                    qrReaderDiv.classList.remove('hidden');
+                    break;
+                case SCAN_STATE_DONE:
+                    scanInstructionEl.textContent = 'Scan complete. Ready to update.';
+                    submitUpdateButton.disabled = false;
+                    submitUpdateButton.classList.remove('btn-disabled');
+                    qrReaderDiv.classList.add('hidden'); // Hide QR reader after both scans
+                    break;
+            }
+        }
+
+        // Callback for successful QR code scan
+        function onScanSuccess(decodedText, decodedResult) {
+            console.log(`Scan successful! Decoded text: ${decodedText}`, decodedResult);
+            if (currentScanState === SCAN_STATE_BARREL) {
+                scannedBarrelId = decodedText;
+                currentScanState = SCAN_STATE_LOCATION; // Move to next state
+                updateStatusEl.textContent = `Barrel ID: ${scannedBarrelId} scanned. Now scan location.`;
+                updateStatusEl.className = 'text-center mt-3 font-medium text-blue-600';
+            } else if (currentScanState === SCAN_STATE_LOCATION) {
+                scannedLocationId = decodedText;
+                currentScanState = SCAN_STATE_DONE; // All scans finished
+                if (html5QrCode && html5QrCode.isScanning) {
+                    html5QrCode.stop().catch(err => console.error("Error stopping scanner post-scan:", err));
+                }
+                updateStatusEl.textContent = `Location ID: ${scannedLocationId} scanned. Ready to submit.`;
+                updateStatusEl.className = 'text-center mt-3 font-medium text-blue-600';
+            }
+            updateUI(); // Refresh UI
+        }
+
+        // Callback for QR code scan errors
+        function onScanError(errorMessage) {
+            // console.warn(`Scan error: ${errorMessage}`); // Log warnings, not full errors unless critical
+        }
+
+        // Function to initialize and start the QR code scanner
+        function startScanner() {
+            console.log("startScanner called.");
+            if (!googleAppsScriptUrl) {
+                updateStatusEl.textContent = 'Error: Google Apps Script URL not set. Please enter it above.';
+                updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+                currentScanState = SCAN_STATE_IDLE; // Revert to idle to show URL input
+                updateUI();
+                return;
+            }
+            console.log("Apps Script URL is set:", googleAppsScriptUrl);
+
+            // Stop any existing scanner instance
+            if (html5QrCode && html5QrCode.isScanning) {
+                console.log("Stopping existing scanner instance...");
+                html5QrCode.stop().catch(err => console.warn("Warning: Error stopping existing scanner:", err));
+            }
+            
+            html5QrCode = new Html5Qrcode("qr-reader"); // Create new scanner instance
+            currentScanState = SCAN_STATE_BARREL; // Set initial scan state
+            scannedBarrelId = null; // Reset scanned data
+            scannedLocationId = null;
+            updateStatusEl.textContent = ''; // Clear previous status messages
+            updateUI(); // Update UI to show scanner
+
+            // Configuration for the scanner
+            // Prefer rear camera
+            const config = { 
+                fps: 10, 
+                qrbox: { width: 250, height: 250 },
+                facingMode: { exact: "environment" } // Try to force rear camera
+            };
+            
+            console.log("Attempting to start scanner with config:", config);
+            html5QrCode.start(
+                { facingMode: "environment" }, // Request rear camera
+                config,
+                onScanSuccess,
+                onScanError
+            ).catch(err => {
+                console.error("Critical Error: Failed to start QR scanner with rear camera preference:", err);
+                // Fallback to any camera if specific facingMode fails
+                console.log("Attempting fallback to any available camera...");
+                scanInstructionEl.textContent = "Trying fallback camera...";
+                html5QrCode.start(
+                    undefined, // Let library choose camera
+                    { fps: 10, qrbox: { width: 250, height: 250 } }, // Simpler config for fallback
+                    onScanSuccess,
+                    onScanError
+                ).catch(fallbackErr => {
+                    console.error("Critical Error: Fallback camera attempt also failed:", fallbackErr);
+                    scanInstructionEl.textContent = "Error starting scanner. Check camera permissions.";
+                    updateStatusEl.textContent = "Error: Could not start camera. " + fallbackErr;
+                    updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+                });
+            });
+        }
+
+        // Event listener for the "Update Location in Sheet" button
+        submitUpdateButton.addEventListener('click', () => {
+            console.log("Submit Update button clicked.");
+            if (!scannedBarrelId || !scannedLocationId) {
+                updateStatusEl.textContent = 'Error: Barrel ID or Location ID is missing. Please scan both.';
+                updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+                return;
+            }
+            if (!googleAppsScriptUrl) {
+                updateStatusEl.textContent = 'Error: Google Apps Script URL not set.';
+                updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+                return;
+            }
+
+            updateStatusEl.textContent = 'Updating... Please wait.';
+            updateStatusEl.className = 'text-center mt-3 font-medium text-yellow-600';
+            submitUpdateButton.disabled = true; // Disable button during submission
+            submitUpdateButton.classList.add('btn-disabled');
+            
+            const data = new URLSearchParams(); // Use URLSearchParams for simple POST
+            data.append('barrelId', scannedBarrelId);
+            data.append('locationId', scannedLocationId);
+
+            console.log("Fetching to Apps Script URL:", googleAppsScriptUrl, "with data:", {barrelId: scannedBarrelId, locationId: scannedLocationId});
+            fetch(googleAppsScriptUrl, {
+                method: 'POST',
+                mode: 'cors', 
+                body: data 
+            })
+            .then(response => {
+                console.log("Received response from Apps Script:", response);
+                if (!response.ok) { // Check for HTTP errors (like 4xx, 5xx)
+                    throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("Parsed JSON data from Apps Script:", data);
+                if (data.status === 'success') {
+                    updateStatusEl.textContent = `Success: ${data.message}`;
+                    updateStatusEl.className = 'status-success text-center mt-3 font-medium';
+                } else {
+                    updateStatusEl.textContent = `Error from script: ${data.message}`;
+                    updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+                }
+            })
+            .catch(error => {
+                console.error('Critical Error updating sheet:', error);
+                updateStatusEl.textContent = 'Error: Could not connect to update script. ' + error.message;
+                updateStatusEl.className = 'status-error text-center mt-3 font-medium';
+            })
+            .finally(() => {
+                // Button remains disabled until "Scan Again" is clicked
+                console.log("Fetch operation complete.");
+            });
+        });
+
+        // Event listener for the "Scan Again" button
+        resetScannerButton.addEventListener('click', () => {
+            console.log("Reset Scanner button clicked.");
+            startScanner(); // Re-initialize the scanner
+        });
+        
+        // Event listener for the "Save URL & Start" button
+        saveUrlButton.addEventListener('click', () => {
+            console.log("Save URL button clicked.");
+            const url = appsScriptUrlInput.value.trim();
+            if (url) {
+                googleAppsScriptUrl = url;
+                localStorage.setItem('googleAppsScriptUrl_barrelScanner', url); // Save URL to local storage
+                urlStatus.textContent = 'URL Saved. Initializing scanner...';
+                urlStatus.className = 'text-xs text-green-600 mt-1';
+                console.log("URL saved:", googleAppsScriptUrl);
+                startScanner(); // Call startScanner after saving
+            } else {
+                urlStatus.textContent = 'Please enter a valid URL.';
+                urlStatus.className = 'text-xs text-red-600 mt-1';
+                console.warn("Save URL clicked, but URL input was empty.");
+            }
+        });
+
+        // Initial setup when the page loads
+        function initializeApp() {
+            console.log("Initializing app...");
+            if (googleAppsScriptUrl) {
+                appsScriptUrlInput.value = googleAppsScriptUrl; // Pre-fill if URL is in localStorage
+                urlStatus.textContent = 'Saved URL found. Click "Save URL & Start Scanner" to begin or update URL.';
+                urlStatus.className = 'text-xs text-blue-600 mt-1';
+                console.log("Found saved URL in localStorage:", googleAppsScriptUrl);
+            } else {
+                urlStatus.textContent = 'Please configure the Google Apps Script URL first.';
+                urlStatus.className = 'text-xs text-yellow-600 mt-1';
+                console.log("No saved URL found in localStorage.");
+            }
+            currentScanState = SCAN_STATE_IDLE; // Ensure initial state is idle
+            updateUI(); // Set the initial UI state (shows URL input)
+        }
+
+        initializeApp(); // Call initialization function on page load
+
+    </script>
+</body>
+</html>
